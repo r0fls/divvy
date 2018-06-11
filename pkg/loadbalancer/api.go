@@ -7,6 +7,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"sync"
 )
 
 type Worker struct {
@@ -16,7 +17,11 @@ type Worker struct {
 	HealthcheckPath string
 }
 
-type Workers map[string][]Worker
+type Workers struct {
+	Items    map[string][]Worker
+	Position map[string]int
+	Mutex    map[string]*sync.Mutex
+}
 
 type Api struct {
 	Port         int
@@ -24,29 +29,53 @@ type Api struct {
 }
 
 type LoadBalancer struct {
-	Port           int
-	Workers        Workers
-	WorkerPosition map[string]int
+	Workers
+	Port int
+}
+
+func (w *Workers) Get(key string) []Worker {
+	return w.Items[key]
+}
+
+func (w *Workers) Set(host string, value Worker) {
+	w.Mutex[host].Lock()
+	defer w.Mutex[host].Unlock()
+	w.Items[host] = append(w.Items[host], value)
+}
+
+func (w *Workers) GetPosition(host string) int {
+	w.Mutex[host].Lock()
+	defer w.Mutex[host].Unlock()
+	return w.Position[host]
+}
+
+func (w *Workers) Inc(host string) {
+	w.Mutex[host].Lock()
+	defer w.Mutex[host].Unlock()
+	w.Position[host] = int(math.Mod(float64(w.Position[host])+1, float64(len(w.Get(host)))))
 }
 
 func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Choose worker based on host
-	workers, ok := lb.Workers[r.Host]
-	if !ok {
+	workers := lb.Workers.Get(r.Host)
+	if len(workers) == 0 {
 		w.WriteHeader(http.StatusNotFound)
 		fmt.Fprintf(w, "Not found.\n")
 	}
 	// Get data from worker
-	resp, err := http.Get(fmt.Sprintf("http://%s:%d", lb.Workers[r.Host][lb.WorkerPosition[r.Host]].Address, workers[lb.WorkerPosition[r.Host]].Port))
+	position := lb.GetPosition(r.Host)
+	resp, err := http.Get(fmt.Sprintf("http://%s:%d", workers[position].Address, workers[position].Port))
+	go func() {
+		lb.Inc(r.Host)
+	}()
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Fprintf(w, "Internal Server Error.\n")
+		return
 	}
+
 	defer resp.Body.Close()
-	go func() {
-		lb.WorkerPosition[r.Host] += 1
-		lb.WorkerPosition[r.Host] = int(math.Mod(float64(lb.WorkerPosition[r.Host]), float64(len(lb.Workers[r.Host]))))
-	}()
+
 	bodyBytes, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -73,8 +102,11 @@ func (a *Api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Invalid post data")
 		return
 	}
-	a.LoadBalancer.Workers[worker.Host] = append(a.LoadBalancer.Workers[worker.Host], worker)
-	fmt.Fprintf(w, "added worker %s to workers for host %s. There are now %d workers for %s\n", worker.Address, worker.Host, len(a.LoadBalancer.Workers[worker.Host]), worker.Host)
+	if a.LoadBalancer.Mutex[worker.Host] == nil {
+		a.LoadBalancer.Mutex[worker.Host] = &sync.Mutex{}
+	}
+	a.LoadBalancer.Set(worker.Host, worker)
+	fmt.Fprintf(w, "added worker %s to workers for host %s. There are now %d workers for %s\n", worker.Address, worker.Host, len(a.LoadBalancer.Get(worker.Host)), worker.Host)
 }
 
 func (a *Api) Start() {
@@ -85,7 +117,8 @@ func (a *Api) Start() {
 func Start() {
 	workers := make(map[string][]Worker)
 	workerPositions := make(map[string]int)
-	loadbalancer := LoadBalancer{8081, workers, workerPositions}
+	mutex := make(map[string]*sync.Mutex)
+	loadbalancer := LoadBalancer{Workers{workers, workerPositions, mutex}, 8081}
 	api := Api{8080, &loadbalancer}
 	go api.Start()
 	loadbalancer.Start()
