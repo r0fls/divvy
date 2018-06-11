@@ -64,7 +64,7 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// Get data from worker
 	position := lb.GetPosition(r.Host)
-	resp, err := http.Get(fmt.Sprintf("http://%s:%d", workers[position].Address, workers[position].Port))
+	resp, err := http.Get(fmt.Sprintf("http://%s:%d%s", workers[position].Address, workers[position].Port, r.URL.Path))
 	go func() {
 		lb.Inc(r.Host)
 	}()
