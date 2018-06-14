@@ -10,6 +10,12 @@ import (
 	"sync"
 )
 
+// TODO:
+// - remove hosts
+// - require API key
+// - latency based routing?
+// - healthchecks?
+
 type Worker struct {
 	Host            string
 	Address         string
@@ -66,6 +72,7 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Get data from worker
 	position := lb.GetPosition(r.Host)
 	client := &http.Client{}
+	// TODO: record latency and/or error rate and allow latency/error based routing?
 	req, err := http.NewRequest(r.Method, fmt.Sprintf("http://%s:%d%s", workers[position].Address, workers[position].Port, r.URL.Path), r.Body)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -81,7 +88,6 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Internal Server Error.\n")
 		return
 	}
-
 	defer resp.Body.Close()
 
 	bodyBytes, err := ioutil.ReadAll(resp.Body)
@@ -94,17 +100,37 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, string(bodyBytes))
 }
 
+func (lb *LoadBalancer) Remove(worker Worker) {
+	for i, w := range lb.Workers.Items[worker.Host] {
+		if w.Address == worker.Address && w.Port == worker.Port {
+			lb.Workers.Items[w.Host] = append(
+				lb.Workers.Items[w.Host][:i],
+				lb.Workers.Items[w.Host][i+1:]...,
+			)
+		}
+	}
+}
+
 func (lb *LoadBalancer) Start() {
 	//TODO: make port configurable
 	log.Fatal(http.ListenAndServe(":8081", lb))
 }
 
 func (a *Api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	//TODO: prevent adding the same host twice
+	//TODO: prevent adding the same backend twice; support weights
 	decoder := json.NewDecoder(r.Body)
 	defer r.Body.Close()
 	var worker Worker
-	err := decoder.Decode(&worker)
+	var err error
+	if r.Method == "POST" {
+		err = decoder.Decode(&worker)
+	} else if r.Method == "DELETE" {
+		err = decoder.Decode(&worker)
+		// TODO: handle no workers for host
+		a.LoadBalancer.Remove(worker)
+		fmt.Fprintf(w, "removed worker %s from workers for host %s. There are now %d workers for %s\n", worker.Address, worker.Host, len(a.LoadBalancer.Get(worker.Host)), worker.Host)
+		return
+	}
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		fmt.Fprintf(w, "Invalid post data")
