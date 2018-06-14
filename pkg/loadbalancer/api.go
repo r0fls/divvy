@@ -61,10 +61,18 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if len(workers) == 0 {
 		w.WriteHeader(http.StatusNotFound)
 		fmt.Fprintf(w, "Not found.\n")
+		return
 	}
 	// Get data from worker
 	position := lb.GetPosition(r.Host)
-	resp, err := http.Get(fmt.Sprintf("http://%s:%d%s", workers[position].Address, workers[position].Port, r.URL.Path))
+	client := &http.Client{}
+	req, err := http.NewRequest(r.Method, fmt.Sprintf("http://%s:%d%s", workers[position].Address, workers[position].Port, r.URL.Path), r.Body)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "Internal Server Error.\n")
+		return
+	}
+	resp, err := client.Do(req)
 	go func() {
 		lb.Inc(r.Host)
 	}()
