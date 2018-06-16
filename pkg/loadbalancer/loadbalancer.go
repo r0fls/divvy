@@ -2,6 +2,7 @@ package loadbalancer
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -11,7 +12,8 @@ import (
 )
 
 // TODO:
-// - remove hosts
+// - load from config file
+// - update config file
 // - require API key
 // - latency based routing?
 // - healthchecks?
@@ -43,10 +45,17 @@ func (w *Workers) Get(key string) []Worker {
 	return w.Items[key]
 }
 
-func (w *Workers) Set(host string, value Worker) {
+func (w *Workers) Set(host string, value Worker) error {
 	w.Mutex[host].Lock()
 	defer w.Mutex[host].Unlock()
+	// Don't add this backend if it's already for this host
+	for _, item := range w.Items[host] {
+		if value.Address == item.Address && value.Port == item.Port {
+			return errors.New("Duplicate worker")
+		}
+	}
 	w.Items[host] = append(w.Items[host], value)
+	return nil
 }
 
 func (w *Workers) GetPosition(host string) int {
@@ -139,7 +148,11 @@ func (a *Api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if a.LoadBalancer.Mutex[worker.Host] == nil {
 		a.LoadBalancer.Mutex[worker.Host] = &sync.Mutex{}
 	}
-	a.LoadBalancer.Set(worker.Host, worker)
+	err = a.LoadBalancer.Set(worker.Host, worker)
+	if err != nil {
+		fmt.Fprintf(w, "detected duplicate worker %s for host %s. There are still %d workers for %s\n", worker.Address, worker.Host, len(a.LoadBalancer.Get(worker.Host)), worker.Host)
+		return
+	}
 	fmt.Fprintf(w, "added worker %s to workers for host %s. There are now %d workers for %s\n", worker.Address, worker.Host, len(a.LoadBalancer.Get(worker.Host)), worker.Host)
 }
 
