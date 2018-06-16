@@ -31,11 +31,6 @@ type Workers struct {
 	Mutex    map[string]*sync.Mutex
 }
 
-type Api struct {
-	Port         int
-	LoadBalancer *LoadBalancer
-}
-
 type LoadBalancer struct {
 	Workers
 	Port int
@@ -74,8 +69,7 @@ func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Choose worker based on host
 	workers := lb.Workers.Get(r.Host)
 	if len(workers) == 0 {
-		w.WriteHeader(http.StatusNotFound)
-		fmt.Fprintf(w, "Not found.\n")
+		lb.handleAPI(w, r)
 		return
 	}
 	// Get data from worker
@@ -125,7 +119,7 @@ func (lb *LoadBalancer) Start() {
 	log.Fatal(http.ListenAndServe(":8081", lb))
 }
 
-func (a *Api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (lb *LoadBalancer) handleAPI(w http.ResponseWriter, r *http.Request) {
 	//TODO: prevent adding the same backend twice; support weights
 	decoder := json.NewDecoder(r.Body)
 	defer r.Body.Close()
@@ -136,8 +130,8 @@ func (a *Api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else if r.Method == "DELETE" {
 		err = decoder.Decode(&worker)
 		// TODO: handle no workers for host
-		a.LoadBalancer.Remove(worker)
-		fmt.Fprintf(w, "removed worker %s from workers for host %s. There are now %d workers for %s\n", worker.Address, worker.Host, len(a.LoadBalancer.Get(worker.Host)), worker.Host)
+		lb.Remove(worker)
+		fmt.Fprintf(w, "removed worker %s from workers for host %s. There are now %d workers for %s\n", worker.Address, worker.Host, len(lb.Get(worker.Host)), worker.Host)
 		return
 	}
 	if err != nil {
@@ -145,20 +139,15 @@ func (a *Api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Invalid post data")
 		return
 	}
-	if a.LoadBalancer.Mutex[worker.Host] == nil {
-		a.LoadBalancer.Mutex[worker.Host] = &sync.Mutex{}
+	if lb.Mutex[worker.Host] == nil {
+		lb.Mutex[worker.Host] = &sync.Mutex{}
 	}
-	err = a.LoadBalancer.Set(worker.Host, worker)
+	err = lb.Set(worker.Host, worker)
 	if err != nil {
-		fmt.Fprintf(w, "detected duplicate worker %s for host %s. There are still %d workers for %s\n", worker.Address, worker.Host, len(a.LoadBalancer.Get(worker.Host)), worker.Host)
+		fmt.Fprintf(w, "detected duplicate worker %s for host %s. There are still %d workers for %s\n", worker.Address, worker.Host, len(lb.Get(worker.Host)), worker.Host)
 		return
 	}
-	fmt.Fprintf(w, "added worker %s to workers for host %s. There are now %d workers for %s\n", worker.Address, worker.Host, len(a.LoadBalancer.Get(worker.Host)), worker.Host)
-}
-
-func (a *Api) Start() {
-	//TODO: make port configurable
-	log.Fatal(http.ListenAndServe(":8080", a))
+	fmt.Fprintf(w, "added worker %s to workers for host %s. There are now %d workers for %s\n", worker.Address, worker.Host, len(lb.Get(worker.Host)), worker.Host)
 }
 
 func Start() {
@@ -166,7 +155,5 @@ func Start() {
 	workerPositions := make(map[string]int)
 	mutex := make(map[string]*sync.Mutex)
 	loadbalancer := LoadBalancer{Workers{workers, workerPositions, mutex}, 8081}
-	api := Api{8080, &loadbalancer}
-	go api.Start()
 	loadbalancer.Start()
 }
