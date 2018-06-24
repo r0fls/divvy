@@ -68,7 +68,7 @@ func (w *Workers) Inc(host string) {
 func (lb *LoadBalancer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Choose worker based on host
 	workers := lb.Workers.Get(r.Host)
-	if len(workers) == 0 {
+	if len(workers) == 0 && r.Method == "POST" {
 		lb.handleAPI(w, r)
 		return
 	}
